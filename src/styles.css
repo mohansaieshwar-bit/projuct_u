@@ -1,0 +1,48 @@
+:root {
+  font-family: Inter, Arial, sans-serif;
+  color: #111827;
+  background: #f8fafc;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: inherit; text-decoration: none; }
+.container { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+.page-space { padding: 24px 0 48px; }
+.topbar { background: white; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 10; }
+.row { display: flex; }
+.between { justify-content: space-between; }
+.center { align-items: center; }
+.gap-sm { gap: 12px; }
+.brand { font-size: 22px; font-weight: 800; }
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: 2fr 1fr; }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.card { background: white; border: 1px solid #e5e7eb; border-radius: 16px; padding: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.05); }
+.input, .textarea, .select {
+  width: 100%; padding: 12px 14px; border: 1px solid #d1d5db; border-radius: 10px; background: white;
+}
+.textarea { min-height: 180px; resize: vertical; }
+.label { font-size: 14px; font-weight: 600; margin-bottom: 6px; display: block; }
+.form-group { margin-bottom: 14px; }
+.btn { border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 700; }
+.btn-primary { background: #111827; color: white; }
+.btn-secondary { background: #e5e7eb; color: #111827; }
+.btn-danger { background: #dc2626; color: white; }
+.btn-warning { background: #f59e0b; color: white; }
+.badge { display: inline-block; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #e5e7eb; }
+.muted { color: #6b7280; }
+.title { margin: 0 0 8px; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.story-card h3 { margin: 0 0 6px; }
+.hero { padding: 24px; background: linear-gradient(135deg, #eef2ff, #ecfeff); border-radius: 20px; margin-bottom: 20px; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
+.notice { padding: 12px 14px; border-radius: 12px; background: #fef3c7; }
+.success { background: #dcfce7; }
+.error { background: #fee2e2; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.stat-box { background: white; border-radius: 16px; border: 1px solid #e5e7eb; padding: 18px; }
+.stat-box h2 { margin: 8px 0 0; }
+@media (max-width: 860px) {
+  .grid-2, .grid-3, .stats { grid-template-columns: 1fr; }
+}
