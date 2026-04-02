@@ -1,96 +1,273 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
 
 export default function AdminDashboard() {
+  const { user } = useAuth()
+
   const [stories, setStories] = useState([])
   const [deleteRequests, setDeleteRequests] = useState([])
-  const [stats, setStats] = useState({ totalStories: 0, publishedStories: 0, totalViews: 0, pendingDeletes: 0 })
+  const [stats, setStats] = useState({
+    totalStories: 0,
+    publishedStories: 0,
+    totalViews: 0,
+    pendingDeletes: 0,
+  })
   const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [isUpdating, setIsUpdating] = useState(false)
 
   useEffect(() => {
     fetchData()
   }, [])
 
   async function fetchData() {
-    const [storiesRes, requestsRes, viewsRes] = await Promise.all([
-      supabase.from('stories_admin').select('*').order('created_at', { ascending: false }),
-      supabase.from('delete_requests_admin').select('*, stories(title)').order('created_at', { ascending: false }),
-      supabase.from('story_views').select('id'),
-    ])
+    try {
+      setError('')
 
-    const storyRows = storiesRes.data || []
-    const requestRows = requestsRes.data || []
-    setStories(storyRows)
-    setDeleteRequests(requestRows)
-    setStats({
-      totalStories: storyRows.length,
-      publishedStories: storyRows.filter((x) => x.status === 'published').length,
-      totalViews: viewsRes.data?.length || 0,
-      pendingDeletes: requestRows.filter((x) => x.status === 'pending').length,
-    })
+      const [storiesRes, requestsRes, viewsRes] = await Promise.all([
+        supabase
+          .from('stories_admin')
+          .select('*')
+          .order('created_at', { ascending: false }),
+
+        supabase
+          .from('delete_requests')
+          .select(`
+            *,
+            stories (
+              id,
+              title
+            )
+          `)
+          .order('created_at', { ascending: false }),
+
+        supabase
+          .from('story_views')
+          .select('*', { count: 'exact', head: true }),
+      ])
+
+      if (storiesRes.error) throw storiesRes.error
+      if (requestsRes.error) throw requestsRes.error
+      if (viewsRes.error) throw viewsRes.error
+
+      const storyRows = storiesRes.data || []
+      const requestRows = requestsRes.data || []
+      const totalViews = viewsRes.count || 0
+
+      setStories(storyRows)
+      setDeleteRequests(requestRows)
+      setStats({
+        totalStories: storyRows.length,
+        publishedStories: storyRows.filter((x) => x.status === 'published').length,
+        totalViews,
+        pendingDeletes: requestRows.filter((x) => x.status === 'pending').length,
+      })
+    } catch (fetchError) {
+      console.error('Admin fetch error:', fetchError)
+      setError(fetchError.message || 'Failed to load admin dashboard')
+    }
   }
 
-  async function updateStory(story, nextStatus) {
-    let publishAt = story.publish_at
-    let publishedAt = story.published_at
-    let unpublishedAt = story.unpublished_at
+  async function insertStoryLog({ storyId, action, oldStatus, newStatus }) {
+    try {
+      const { error: logError } = await supabase.from('story_logs').insert({
+        story_id: storyId,
+        action,
+        old_status: oldStatus,
+        new_status: newStatus,
+        admin_id: user?.id || null,
+      })
 
-    if (nextStatus === 'published') {
-      publishedAt = new Date().toISOString()
-      publishAt = publishAt || publishedAt
-      unpublishedAt = null
+      if (logError) {
+        console.warn('Story log insert failed:', logError.message)
+      }
+    } catch (logError) {
+      console.warn('Story log insert failed:', logError)
     }
-    if (nextStatus === 'unpublished') {
-      unpublishedAt = new Date().toISOString()
-    }
+  }
 
-    const { error } = await supabase
-      .from('stories')
-      .update({ status: nextStatus, publish_at: publishAt, published_at: publishedAt, unpublished_at: unpublishedAt })
-      .eq('id', story.id)
+  async function updateStory(storyId, nextStatus) {
+    setIsUpdating(true)
+    setMessage('')
+    setError('')
 
-    if (!error) {
-      await supabase.from('story_logs').insert({ story_id: story.id, action: `changed to ${nextStatus}`, old_status: story.status, new_status: nextStatus })
-      setMessage('Story updated.')
-      fetchData()
+    try {
+      const existingStory = stories.find((story) => story.id === storyId)
+      const oldStatus = existingStory?.status || null
+
+      const payload = { status: nextStatus }
+
+      if (nextStatus === 'published') {
+        payload.published_at = new Date().toISOString()
+        payload.unpublished_at = null
+      }
+
+      if (nextStatus === 'unpublished') {
+        payload.unpublished_at = new Date().toISOString()
+      }
+
+      if (nextStatus === 'in_review') {
+        payload.published_at = null
+        payload.unpublished_at = null
+      }
+
+      const { error: updateError } = await supabase
+        .from('stories')
+        .update(payload)
+        .eq('id', storyId)
+
+      if (updateError) throw updateError
+
+      setStories((prevStories) =>
+        prevStories.map((story) =>
+          story.id === storyId
+            ? {
+                ...story,
+                status: nextStatus,
+                published_at:
+                  payload.published_at !== undefined ? payload.published_at : story.published_at,
+                unpublished_at:
+                  payload.unpublished_at !== undefined
+                    ? payload.unpublished_at
+                    : story.unpublished_at,
+              }
+            : story
+        )
+      )
+
+      setMessage('Story updated successfully')
+
+      await insertStoryLog({
+        storyId,
+        action: `changed to ${nextStatus}`,
+        oldStatus,
+        newStatus: nextStatus,
+      })
+
+      await fetchData()
+    } catch (updateError) {
+      console.error('updateStory error:', updateError)
+      setError(updateError.message || 'Failed to update story')
+    } finally {
+      setIsUpdating(false)
     }
   }
 
   async function scheduleStory(storyId) {
-    const input = prompt('Enter publish date and time like 2026-04-03T15:30:00')
+    const input = prompt('Enter publish date (YYYY-MM-DDTHH:mm:ss):')
     if (!input) return
-    const iso = new Date(input).toISOString()
-    const { error } = await supabase.from('stories').update({ status: 'scheduled', publish_at: iso }).eq('id', storyId)
-    if (!error) {
-      setMessage('Story scheduled.')
-      fetchData()
+
+    setIsUpdating(true)
+    setMessage('')
+    setError('')
+
+    try {
+      const existingStory = stories.find((story) => story.id === storyId)
+      const oldStatus = existingStory?.status || null
+      const iso = new Date(input).toISOString()
+
+      const { error: scheduleError } = await supabase
+        .from('stories')
+        .update({
+          status: 'scheduled',
+          publish_at: iso,
+        })
+        .eq('id', storyId)
+
+      if (scheduleError) throw scheduleError
+
+      setStories((prevStories) =>
+        prevStories.map((story) =>
+          story.id === storyId
+            ? { ...story, status: 'scheduled', publish_at: iso }
+            : story
+        )
+      )
+
+      setMessage('Story scheduled successfully')
+
+      await insertStoryLog({
+        storyId,
+        action: 'scheduled',
+        oldStatus,
+        newStatus: 'scheduled',
+      })
+
+      await fetchData()
+    } catch (scheduleError) {
+      console.error('scheduleStory error:', scheduleError)
+      setError(scheduleError.message || 'Failed to schedule story')
+    } finally {
+      setIsUpdating(false)
     }
   }
 
   async function handleDeleteRequest(item, status) {
-    const { error } = await supabase.from('delete_requests').update({ status, reviewed_at: new Date().toISOString() }).eq('id', item.id)
-    if (!error && status === 'approved') {
-      await supabase.from('stories').delete().eq('id', item.story_id)
-    }
-    if (!error) {
-      setMessage('Delete request updated.')
-      fetchData()
+    setIsUpdating(true)
+    setMessage('')
+    setError('')
+
+    try {
+      const { error: updateError } = await supabase
+        .from('delete_requests')
+        .update({
+          status,
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: user?.id || null,
+        })
+        .eq('id', item.id)
+
+      if (updateError) throw updateError
+
+      if (status === 'approved') {
+        const { error: deleteError } = await supabase
+          .from('stories')
+          .delete()
+          .eq('id', item.story_id)
+
+        if (deleteError) {
+          console.warn('Story delete failed after approval:', deleteError.message)
+        }
+      }
+
+      setMessage('Delete request processed successfully')
+      await fetchData()
+    } catch (requestError) {
+      console.error('handleDeleteRequest error:', requestError)
+      setError(requestError.message || 'Failed to process delete request')
+    } finally {
+      setIsUpdating(false)
     }
   }
 
   return (
-    <div className="grid" style={{ gap: 20 }}>
+    <div className="grid" style={{ gap: '2rem' }}>
       <div>
         <h1 className="title">Admin dashboard</h1>
-        <p className="muted">See insights, publish or unpublish stories, keep stories in loop, schedule posts, and manage delete requests.</p>
+        <p className="muted">Full story moderation and management.</p>
       </div>
+
+      {error && <div className="notice error">Error: {error}</div>}
       {message && <div className="notice success">{message}</div>}
 
       <div className="stats">
-        <div className="stat-box"><div className="muted">Total stories</div><h2>{stats.totalStories}</h2></div>
-        <div className="stat-box"><div className="muted">Published stories</div><h2>{stats.publishedStories}</h2></div>
-        <div className="stat-box"><div className="muted">Total visits</div><h2>{stats.totalViews}</h2></div>
-        <div className="stat-box"><div className="muted">Pending deletes</div><h2>{stats.pendingDeletes}</h2></div>
+        <div className="stat-box">
+          <div className="muted">Total stories</div>
+          <h2>{stats.totalStories}</h2>
+        </div>
+        <div className="stat-box">
+          <div className="muted">Published</div>
+          <h2>{stats.publishedStories}</h2>
+        </div>
+        <div className="stat-box">
+          <div className="muted">Total views</div>
+          <h2>{stats.totalViews}</h2>
+        </div>
+        <div className="stat-box">
+          <div className="muted">Pending deletes</div>
+          <h2>{stats.pendingDeletes}</h2>
+        </div>
       </div>
 
       <div className="card">
@@ -110,19 +287,51 @@ export default function AdminDashboard() {
               <tr key={story.id}>
                 <td>{story.title}</td>
                 <td>{story.author_name || 'Unknown'}</td>
-                <td><span className="badge">{story.status}</span></td>
+                <td>
+                  <span className="badge">{story.status}</span>
+                </td>
                 <td>{story.publish_at ? new Date(story.publish_at).toLocaleString() : '-'}</td>
                 <td>
-                  <div className="actions">
-                    <button className="btn btn-primary" onClick={() => updateStory(story, 'published')}>Publish</button>
-                    <button className="btn btn-secondary" onClick={() => updateStory(story, 'in_review')}>Keep in loop</button>
-                    <button className="btn btn-warning" onClick={() => scheduleStory(story.id)}>Set date</button>
-                    <button className="btn btn-danger" onClick={() => updateStory(story, 'unpublished')}>Unpublish</button>
+                  <div className="row gap-sm">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => updateStory(story.id, 'published')}
+                      disabled={isUpdating}
+                    >
+                      Publish
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => updateStory(story.id, 'in_review')}
+                      disabled={isUpdating}
+                    >
+                      Keep in loop
+                    </button>
+                    <button
+                      className="btn btn-warning btn-sm"
+                      onClick={() => scheduleStory(story.id)}
+                      disabled={isUpdating}
+                    >
+                      Schedule
+                    </button>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => updateStory(story.id, 'unpublished')}
+                      disabled={isUpdating}
+                    >
+                      Unpublish
+                    </button>
                   </div>
                 </td>
               </tr>
             ))}
-            {stories.length === 0 && <tr><td colSpan="5">No stories found.</td></tr>}
+            {stories.length === 0 && (
+              <tr>
+                <td colSpan="5" className="text-center py-4">
+                  No stories.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -141,20 +350,42 @@ export default function AdminDashboard() {
           <tbody>
             {deleteRequests.map((item) => (
               <tr key={item.id}>
-                <td>{item.stories?.title || 'Story'}</td>
+                <td>{item.stories?.title || 'Unknown'}</td>
                 <td>{item.reason}</td>
-                <td><span className="badge">{item.status}</span></td>
+                <td>
+                  <span className="badge">{item.status}</span>
+                </td>
                 <td>
                   {item.status === 'pending' ? (
-                    <div className="actions">
-                      <button className="btn btn-primary" onClick={() => handleDeleteRequest(item, 'approved')}>Approve</button>
-                      <button className="btn btn-secondary" onClick={() => handleDeleteRequest(item, 'rejected')}>Reject</button>
+                    <div className="row gap-sm">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => handleDeleteRequest(item, 'approved')}
+                        disabled={isUpdating}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleDeleteRequest(item, 'rejected')}
+                        disabled={isUpdating}
+                      >
+                        Reject
+                      </button>
                     </div>
-                  ) : '-'}
+                  ) : (
+                    <span className="muted small">Complete</span>
+                  )}
                 </td>
               </tr>
             ))}
-            {deleteRequests.length === 0 && <tr><td colSpan="4">No delete requests.</td></tr>}
+            {deleteRequests.length === 0 && (
+              <tr>
+                <td colSpan="4" className="text-center py-4">
+                  No delete requests.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

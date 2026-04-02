@@ -1,4 +1,4 @@
-import { useEffect, useState, useContext } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
@@ -22,8 +22,8 @@ export default function StoryFormPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (id === 'new') return
-    if (id) fetchStory()
+    if (id === 'new' || !id) return
+    fetchStory()
   }, [id])
 
   async function fetchStory() {
@@ -31,12 +31,15 @@ export default function StoryFormPage() {
       setLoading(true)
       const { data, error } = await supabase
         .from('stories')
-        .select('title, slug, content, status')
+        .select('title, slug, content')
         .eq('id', id)
         .single()
       if (error) throw error
       if (data) {
-        setForm(data)
+        setForm({
+          ...data,
+          status: 'draft'
+        })
       }
     } catch (err) {
       setError('Failed to load story')
@@ -48,17 +51,17 @@ export default function StoryFormPage() {
   async function handleSubmit(e) {
     e.preventDefault()
     if (!user) {
-      setError('Must be logged in to save story')
+      setError('Must be logged in')
       return
     }
     
     const slug = form.slug || slugify(form.title)
     const payload = {
-      title: form.title,
+      title: form.title.trim(),
       slug,
-      content: form.content,
+      content: form.content.trim(),
       author_id: user.id,
-      status: form.status
+      status: 'draft'  // Always draft for publishers
     }
 
     try {
@@ -68,19 +71,23 @@ export default function StoryFormPage() {
       
       let response
       if (id && id !== 'new') {
+        // Update existing - publishers can only edit content/title/slug
         const { error } = await supabase
           .from('stories')
           .update(payload)
           .eq('id', id)
+          .eq('author_id', user.id)
         if (error) throw error
+        setMessage('Story updated successfully!')
       } else {
+        // Create new
         const { error } = await supabase
           .from('stories')
           .insert([payload])
         if (error) throw error
+        setMessage('Story created successfully!')
       }
       
-      setMessage('Story saved successfully!')
       setTimeout(() => navigate('/publisher/dashboard'), 1500)
     } catch (err) {
       console.error('Story save error:', err)
@@ -95,6 +102,7 @@ export default function StoryFormPage() {
       <h1>{id === 'new' || !id ? 'Create story' : 'Edit story'}</h1>
       {error && <div className="notice error">{error}</div>}
       {message && <div className="notice success">{message}</div>}
+      
       <form onSubmit={handleSubmit}>
         <div className="form-group">
           <label className="label">Title</label>
@@ -106,6 +114,7 @@ export default function StoryFormPage() {
             disabled={loading}
           />
         </div>
+        
         <div className="form-group">
           <label className="label">Slug</label>
           <input 
@@ -115,6 +124,7 @@ export default function StoryFormPage() {
             disabled={loading}
           />
         </div>
+        
         <div className="form-group">
           <label className="label">Content</label>
           <textarea 
@@ -126,21 +136,14 @@ export default function StoryFormPage() {
             disabled={loading}
           />
         </div>
-        <div className="form-group">
-          <label className="label">Status</label>
-          <select 
-            className="input" 
-            value={form.status} 
-            onChange={(e) => setForm({ ...form, status: e.target.value })}
-            disabled={loading}
-          >
-            <option value="draft">Draft</option>
-            <option value="published">Published</option>
-          </select>
-        </div>
+        
+        <p className="muted small">
+          Status: draft (submit for admin review from dashboard)
+        </p>
+        
         <div className="actions">
           <button className="btn btn-primary" type="submit" disabled={loading}>
-            {loading ? 'Saving...' : 'Save Story'}
+            {loading ? 'Saving...' : 'Save Draft'}
           </button>
           <button 
             className="btn btn-secondary" 
